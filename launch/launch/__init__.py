@@ -18,7 +18,9 @@ from . import actions
 from . import conditions
 from . import events
 from . import frontend
+from . import local_machine
 from . import logging
+from . import machine
 from . import substitutions
 from .action import Action
 from .condition import Condition
@@ -31,6 +33,8 @@ from .launch_description_entity import LaunchDescriptionEntity
 from .launch_description_source import LaunchDescriptionSource
 from .launch_introspector import LaunchIntrospector
 from .launch_service import LaunchService
+from .local_machine import LocalMachine
+from .machine import Machine
 from .some_actions_type import SomeActionsType
 from .some_actions_type import SomeActionsType_types_tuple
 from .some_substitutions_type import SomeSubstitutionsType
@@ -55,6 +59,8 @@ __all__ = [
     'LaunchDescriptionSource',
     'LaunchIntrospector',
     'LaunchService',
+    'LocalMachine',
+    'Machine',
     'SomeActionsType',
     'SomeActionsType_types_tuple',
     'SomeSubstitutionsType',

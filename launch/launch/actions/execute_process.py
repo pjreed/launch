@@ -36,7 +36,6 @@ from typing import Union
 import launch.logging
 
 from osrf_pycommon.process_utils import async_execute_process
-from osrf_pycommon.process_utils import AsyncSubprocessProtocol
 
 from .emit_event import EmitEvent
 from .opaque_function import OpaqueFunction
@@ -65,6 +64,8 @@ from ..frontend import Parser
 from ..launch_context import LaunchContext
 from ..launch_description import LaunchDescription
 from ..launch_description_entity import LaunchDescriptionEntity
+from ..local_machine import LocalMachine
+from ..machine import Machine
 from ..some_actions_type import SomeActionsType
 from ..some_substitutions_type import SomeSubstitutionsType
 from ..substitution import Substitution  # noqa: F401
@@ -106,6 +107,7 @@ class ExecuteProcess(Action):
             SomeActionsType,
             Callable[[ProcessExited, LaunchContext], Optional[SomeActionsType]]
         ]] = None,
+        machine: Optional[Machine] = LocalMachine(),
         **kwargs
     ) -> None:
         """
@@ -198,6 +200,7 @@ class ExecuteProcess(Action):
             process, which is useful for debugging when substitutions are
             involved.
         :param: on_exit list of actions to execute upon process exit.
+        :param: machine remote machine that this process should be executed on.
         """
         super().__init__(**kwargs)
         self.__cmd = [normalize_to_list_of_substitutions(x) for x in cmd]
@@ -229,6 +232,7 @@ class ExecuteProcess(Action):
 
         self.__log_cmd = log_cmd
         self.__on_exit = on_exit
+        self.__machine = machine
 
         self.__process_event_args = None  # type: Optional[Dict[Text, Any]]
         self._subprocess_protocol = None  # type: Optional[Any]
@@ -548,34 +552,6 @@ class ExecuteProcess(Action):
         # Signal that we're done to the launch system.
         self.__completed_future.set_result(None)
 
-    class __ProcessProtocol(AsyncSubprocessProtocol):
-        def __init__(
-            self,
-            action: 'ExecuteProcess',
-            context: LaunchContext,
-            process_event_args: Dict,
-            **kwargs
-        ) -> None:
-            super().__init__(**kwargs)
-            self.__context = context
-            self.__action = action
-            self.__process_event_args = process_event_args
-            self.__logger = launch.logging.get_logger(process_event_args['name'])
-
-        def connection_made(self, transport):
-            self.__logger.info(
-                'process started with pid [{}]'.format(transport.get_pid()),
-            )
-            super().connection_made(transport)
-            self.__process_event_args['pid'] = transport.get_pid()
-            self.__action._subprocess_transport = transport
-
-        def on_stdout_received(self, data: bytes) -> None:
-            self.__context.emit_event_sync(ProcessStdout(text=data, **self.__process_event_args))
-
-        def on_stderr_received(self, data: bytes) -> None:
-            self.__context.emit_event_sync(ProcessStderr(text=data, **self.__process_event_args))
-
     def __expand_substitutions(self, context):
         # expand substitutions in arguments to async_execute_process()
         cmd = [perform_substitutions(context, x) for x in self.__cmd]
@@ -611,60 +587,6 @@ class ExecuteProcess(Action):
             # pid is added to the dictionary in the connection_made() method of the protocol.
         }
 
-    async def __execute_process(self, context: LaunchContext) -> None:
-        process_event_args = self.__process_event_args
-        if process_event_args is None:
-            raise RuntimeError('process_event_args unexpectedly None')
-        cmd = process_event_args['cmd']
-        cwd = process_event_args['cwd']
-        env = process_event_args['env']
-        if self.__log_cmd:
-            self.__logger.info("process details: cmd=[{}], cwd='{}', custom_env?={}".format(
-                ', '.join(cmd), cwd, 'True' if env is not None else 'False'
-            ))
-
-        emulate_tty = self.__emulate_tty
-        if 'emulate_tty' in context.launch_configurations:
-            emulate_tty = evaluate_condition_expression(
-                context,
-                normalize_to_list_of_substitutions(
-                    context.launch_configurations['emulate_tty']
-                ),
-            )
-
-        try:
-            transport, self._subprocess_protocol = await async_execute_process(
-                lambda **kwargs: self.__ProcessProtocol(
-                    self, context, process_event_args, **kwargs
-                ),
-                cmd=cmd,
-                cwd=cwd,
-                env=env,
-                shell=self.__shell,
-                emulate_tty=emulate_tty,
-                stderr_to_stdout=False,
-            )
-        except Exception:
-            self.__logger.error('exception occurred while executing process:\n{}'.format(
-                traceback.format_exc()
-            ))
-            self.__cleanup()
-            return
-
-        pid = transport.get_pid()
-
-        await context.emit_event(ProcessStarted(**process_event_args))
-
-        returncode = await self._subprocess_protocol.complete
-        if returncode == 0:
-            self.__logger.info('process has finished cleanly [pid {}]'.format(pid))
-        else:
-            self.__logger.error("process has died [pid {}, exit code {}, cmd '{}'].".format(
-                pid, returncode, ' '.join(cmd)
-            ))
-        await context.emit_event(ProcessExited(returncode=returncode, **process_event_args))
-        self.__cleanup()
-
     def execute(self, context: LaunchContext) -> Optional[List[LaunchDescriptionEntity]]:
         """
         Execute the action.
@@ -681,22 +603,11 @@ class ExecuteProcess(Action):
             return None
 
         event_handlers = [
-            EventHandler(
-                matcher=lambda event: is_a_subclass(event, ShutdownProcess),
-                entities=OpaqueFunction(function=self.__on_shutdown_process_event),
-            ),
-            EventHandler(
-                matcher=lambda event: is_a_subclass(event, SignalProcess),
-                entities=OpaqueFunction(function=self.__on_signal_process_event),
-            ),
             OnProcessIO(
                 target_action=self,
                 on_stdin=self.__on_process_stdin,
                 on_stdout=self.__on_process_stdout,
                 on_stderr=self.__on_process_stderr
-            ),
-            OnShutdown(
-                on_shutdown=self.__on_shutdown,
             ),
             OnProcessExit(
                 target_action=self,
@@ -707,6 +618,20 @@ class ExecuteProcess(Action):
                 on_exit=self.__flush_buffers,
             ),
         ]
+        if isinstance(self.__machine, LocalMachine):
+            event_handlers = [*event_handlers, *[
+                EventHandler(
+                    matcher=lambda event: is_a_subclass(event, ShutdownProcess),
+                    entities=OpaqueFunction(function=self.__on_shutdown_process_event),
+                ),
+                EventHandler(
+                    matcher=lambda event: is_a_subclass(event, SignalProcess),
+                    entities=OpaqueFunction(function=self.__on_signal_process_event),
+                ),
+                OnShutdown(
+                    on_shutdown=self.__on_shutdown,
+                )
+            ]]
         for event_handler in event_handlers:
             context.register_event_handler(event_handler)
 
@@ -716,7 +641,15 @@ class ExecuteProcess(Action):
             self.__logger = launch.logging.get_logger(self.__name)
             self.__stdout_logger, self.__stderr_logger = \
                 launch.logging.get_output_loggers(self.__name, self.__output)
-            context.asyncio_loop.create_task(self.__execute_process(context))
+            context.asyncio_loop.create_task(
+                self.__machine.execute_process(
+                    process_event_args=self.__process_event_args,
+                    log_cmd=self.__log_cmd,
+                    emulate_tty=self.__emulate_tty,
+                    shell=self.__shell,
+                    cleanup_fn=self.__cleanup,
+                    context=context))
+            # context.asyncio_loop.create_task(self.__execute_process(context))
         except Exception:
             for event_handler in event_handlers:
                 context.unregister_event_handler(event_handler)
