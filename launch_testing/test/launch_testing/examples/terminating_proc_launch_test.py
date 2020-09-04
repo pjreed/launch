@@ -22,6 +22,7 @@ import launch
 import launch.actions
 
 import launch_testing
+import launch_testing.actions
 import launch_testing.asserts
 import launch_testing.markers
 import launch_testing.tools
@@ -46,10 +47,8 @@ def get_test_process_action(*, args=[]):
 
 @pytest.mark.launch_test
 @launch_testing.markers.keep_alive
-def generate_test_description(ready_fn):
-    return launch.LaunchDescription([
-        launch.actions.OpaqueFunction(function=lambda context: ready_fn()),
-    ])
+def generate_test_description():
+    return launch.LaunchDescription([launch_testing.actions.ReadyToTest()])
 
 
 class TestTerminatingProc(unittest.TestCase):
@@ -61,10 +60,16 @@ class TestTerminatingProc(unittest.TestCase):
             launch_service, proc_action, proc_info, proc_output
         ):
             proc_info.assertWaitForStartup(process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Starting Up', process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Emulating Work', process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Done', process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Shutting Down', process=proc_action, timeout=2)
+            proc_output.assertWaitFor(
+                'Starting Up', process=proc_action, timeout=2, stream='stdout'
+            )
+            proc_output.assertWaitFor(
+                'Emulating Work', process=proc_action, timeout=2, stream='stdout'
+            )
+            proc_output.assertWaitFor('Done', process=proc_action, timeout=2, stream='stdout')
+            proc_output.assertWaitFor(
+                'Shutting Down', process=proc_action, timeout=2, stream='stdout'
+            )
             proc_info.assertWaitForShutdown(process=proc_action, timeout=4)
         launch_testing.asserts.assertExitCodes(proc_info, process=proc_action)
 
@@ -75,13 +80,20 @@ class TestTerminatingProc(unittest.TestCase):
             launch_service, proc_action, proc_info, proc_output
         ):
             proc_info.assertWaitForStartup(process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Starting Up', process=proc_action, timeout=2)
             proc_output.assertWaitFor(
-                "Called with arguments ['--foo', 'bar']", process=proc_action, timeout=2
+                'Starting Up', process=proc_action, timeout=2, stream='stdout'
             )
-            proc_output.assertWaitFor('Emulating Work', process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Done', process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Shutting Down', process=proc_action, timeout=2)
+            proc_output.assertWaitFor(
+                "Called with arguments ['--foo', 'bar']", process=proc_action, timeout=2,
+                stream='stdout'
+            )
+            proc_output.assertWaitFor(
+                'Emulating Work', process=proc_action, timeout=2, stream='stdout'
+            )
+            proc_output.assertWaitFor('Done', process=proc_action, timeout=2, stream='stdout')
+            proc_output.assertWaitFor(
+                'Shutting Down', process=proc_action, timeout=2, stream='stdout'
+            )
             proc_info.assertWaitForShutdown(process=proc_action, timeout=4)
         launch_testing.asserts.assertExitCodes(proc_info, process=proc_action)
 
@@ -92,9 +104,12 @@ class TestTerminatingProc(unittest.TestCase):
             launch_service, proc_action, proc_info, proc_output
         ):
             proc_info.assertWaitForStartup(process=proc_action, timeout=2)
-            proc_output.assertWaitFor('Starting Up', process=proc_action, timeout=2)
             proc_output.assertWaitFor(
-                "Called with arguments ['--exception']", process=proc_action, timeout=2
+                'Starting Up', process=proc_action, timeout=2, stream='stdout'
+            )
+            proc_output.assertWaitFor(
+                "Called with arguments ['--exception']", process=proc_action, timeout=2,
+                stream='stdout'
             )
             proc_info.assertWaitForShutdown(process=proc_action, timeout=4)
         launch_testing.asserts.assertExitCodes(

@@ -2,6 +2,23 @@
 Changelog for package launch_yaml
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.10.3 (2020-08-27)
+-------------------
+* Add pytest.ini so local tests don't display warning (`#428 <https://github.com/ros2/launch/issues/428>`_)
+* Contributors: Chris Lalancette
+
+0.10.2 (2020-05-26)
+-------------------
+
+0.10.1 (2020-05-08)
+-------------------
+
+0.10.0 (2020-04-24)
+-------------------
+* more verbose test_flake8 error messages (same as `ros2/launch_ros#135 <https://github.com/ros2/launch_ros/issues/135>`_)
+* Use imperative mood in docstrings. (`#362 <https://github.com/ros2/launch/issues/362>`_)
+* Contributors: Dirk Thomas, Steven! Ragnarök
+
 0.9.5 (2019-11-13)
 ------------------
 

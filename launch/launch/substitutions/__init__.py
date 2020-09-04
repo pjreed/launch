@@ -14,6 +14,8 @@
 
 """Package for substitutions."""
 
+from .anon_name import AnonName
+from .command import Command
 from .environment_variable import EnvironmentVariable
 from .find_executable import FindExecutable
 from .launch_configuration import LaunchConfiguration
@@ -26,6 +28,8 @@ from .this_launch_file import ThisLaunchFile
 from .this_launch_file_dir import ThisLaunchFileDir
 
 __all__ = [
+    'AnonName',
+    'Command',
     'EnvironmentVariable',
     'FindExecutable',
     'LaunchConfiguration',

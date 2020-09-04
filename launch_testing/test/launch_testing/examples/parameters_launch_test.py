@@ -21,6 +21,7 @@ import ament_index_python
 import launch
 import launch.actions
 import launch_testing
+import launch_testing.actions
 import launch_testing.util
 
 import pytest
@@ -28,7 +29,7 @@ import pytest
 
 @pytest.mark.launch_test
 @launch_testing.parametrize('arg_param', ['thing=On', 'thing=Off', 'flag1'])
-def generate_test_description(arg_param, ready_fn):
+def generate_test_description(arg_param):
 
     terminating_process = launch.actions.ExecuteProcess(
         cmd=[
@@ -48,7 +49,7 @@ def generate_test_description(arg_param, ready_fn):
         launch.LaunchDescription([
             terminating_process,
             launch_testing.util.KeepAliveProc(),
-            launch.actions.OpaqueFunction(function=lambda context: ready_fn())
+            launch_testing.actions.ReadyToTest(),
         ]),
         {'dut_process': terminating_process}
     )
@@ -58,5 +59,5 @@ class TestProcessOutput(unittest.TestCase):
 
     # Note that 'arg_param' is automatically given to the test case, even though it was not
     # part of the test context.
-    def test_process_outputs_expectd_value(self, proc_output, arg_param):
-        proc_output.assertWaitFor('--' + arg_param, timeout=10)
+    def test_process_outputs_expected_value(self, proc_output, arg_param):
+        proc_output.assertWaitFor('--' + arg_param, timeout=10, stream='stdout')

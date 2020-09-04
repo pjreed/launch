@@ -15,11 +15,9 @@
 """Module for the LaunchService class."""
 
 import asyncio
-import atexit
 import collections.abc
 import contextlib
 import logging
-import os
 import signal
 import threading
 import traceback
@@ -49,23 +47,6 @@ from .utilities import on_sigint
 from .utilities import on_sigquit
 from .utilities import on_sigterm
 from .utilities import visit_all_entities_and_collect_futures
-
-_g_loops_used = set()  # type: Set
-
-
-# This atexit handler ensures all the loops are closed at exit.
-# This is only really required pre-3.6, see:
-#   https://github.com/ros2/launch/issues/84
-#   https://bugs.python.org/issue23548
-# Don't add this on Windows. It causes:
-#   https://github.com/ros2/demos/issues/354.
-if os.name != 'nt':
-    @atexit.register
-    def close_loop():
-        global _g_loops_used
-        for loop in _g_loops_used:
-            if not loop.is_closed():
-                loop.close()
 
 
 class LaunchService:
@@ -127,6 +108,7 @@ class LaunchService:
 
         If the LaunchService is not running, the event is queued until it is.
         """
+        future = None
         with self.__loop_from_run_thread_lock:
             if self.__loop_from_run_thread is not None:
                 # loop is in use, asynchronously emit the event
@@ -134,10 +116,13 @@ class LaunchService:
                     self.__context.emit_event(event),
                     self.__loop_from_run_thread
                 )
-                future.result()
             else:
                 # loop is not in use, synchronously emit the event, and it will be processed later
                 self.__context.emit_event_sync(event)
+
+        if future is not None:
+            # Block until asynchronously emitted event is emitted by loop
+            future.result()
 
     def include_launch_description(self, launch_description: LaunchDescription) -> None:
         """
@@ -173,7 +158,7 @@ class LaunchService:
         return number_of_entity_future_pairs == 0 and self.__context._event_queue.empty()
 
     @contextlib.contextmanager
-    def _prepare_run_loop(self, loop):
+    def _prepare_run_loop(self):
         try:
             # Acquire the lock and initialize the loop.
             with self.__loop_from_run_thread_lock:
@@ -181,10 +166,7 @@ class LaunchService:
                     raise RuntimeError(
                         'LaunchService cannot be run multiple times concurrently.'
                     )
-                this_loop = asyncio.get_event_loop() if loop is None else loop
-
-                global _g_loops_used
-                _g_loops_used.add(this_loop)
+                this_loop = asyncio.get_event_loop()
 
                 if self.__debug:
                     this_loop.set_debug(True)
@@ -192,7 +174,7 @@ class LaunchService:
                 # Set the asyncio loop for the context.
                 self.__context._set_asyncio_loop(this_loop)
                 # Recreate the event queue to ensure the same event loop is being used.
-                new_queue = asyncio.Queue(loop=this_loop)
+                new_queue = asyncio.Queue()
                 while True:
                     try:
                         new_queue.put_nowait(self.__context._event_queue.get_nowait())
@@ -317,7 +299,7 @@ class LaunchService:
                 #     'launch.LaunchService',
                 #     "processing event: '{}' x '{}'".format(event, event_handler))
 
-    async def run_async(self, *, shutdown_when_idle=True, loop=None) -> int:
+    async def run_async(self, *, shutdown_when_idle=True) -> int:
         """
         Visit all entities of all included LaunchDescription instances asynchronously.
 
@@ -336,7 +318,7 @@ class LaunchService:
             )
 
         return_code = 0
-        with self._prepare_run_loop(loop) as (this_loop, this_task):
+        with self._prepare_run_loop() as (this_loop, this_task):
             # Log logging configuration details.
             launch.logging.log_launch_config(logger=self.__logger)
 
@@ -347,6 +329,7 @@ class LaunchService:
                 return loop.default_exception_handler(context)
             this_loop.set_exception_handler(_on_exception)
 
+            process_one_event_task = None
             while True:
                 try:
                     # Check if we're idle, i.e. no on-going entities (actions) or events in
@@ -356,29 +339,37 @@ class LaunchService:
                         ret = await self._shutdown(reason='idle', due_to_sigint=False)
                         assert ret is None, ret
                         continue
-                    process_one_event_task = this_loop.create_task(self._process_one_event())
-                    if self.__shutting_down:
-                        # If shutting down and idle then we're done.
-                        if is_idle:
+
+                    # Stop running if we're shutting down and there's no more work
+                    if self.__shutting_down and is_idle:
+                        if (
+                            process_one_event_task is not None and
+                            not process_one_event_task.done()
+                        ):
                             process_one_event_task.cancel()
-                            break
+                        break
+
+                    # Collect futures to wait on
+                    # We only need to wait on futures if there are no events to wait on
+                    entity_futures = []
+                    if self.__context._event_queue.empty():
                         entity_futures = [pair[1] for pair in self._entity_future_pairs]
-                        entity_futures.append(process_one_event_task)
                         entity_futures.extend(self.__context._completion_futures)
-                        done = set()  # type: Set[asyncio.Future]
-                        while not done:
-                            done, pending = await asyncio.wait(
-                                entity_futures,
-                                loop=this_loop,
-                                timeout=1.0,
-                                return_when=asyncio.FIRST_COMPLETED
-                            )
-                            if not done:
-                                self.__logger.debug(
-                                    'still waiting on futures: {}'.format(entity_futures)
-                                )
-                    else:
-                        await process_one_event_task
+
+                    # If the current task is done, create a new task to process any events
+                    # in the queue
+                    if process_one_event_task is None or process_one_event_task.done():
+                        process_one_event_task = this_loop.create_task(self._process_one_event())
+
+                    # Add the process event task to the list of awaitables
+                    entity_futures.append(process_one_event_task)
+
+                    # Wait on events and futures
+                    await asyncio.wait(
+                        entity_futures,
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+
                 except KeyboardInterrupt:
                     continue
                 except asyncio.CancelledError:
@@ -407,7 +398,7 @@ class LaunchService:
         """
         loop = osrf_pycommon.process_utils.get_loop()
         run_async_task = loop.create_task(self.run_async(
-            shutdown_when_idle=shutdown_when_idle, loop=loop
+            shutdown_when_idle=shutdown_when_idle
         ))
         loop.run_until_complete(run_async_task)
         return run_async_task.result()
